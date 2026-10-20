@@ -9,12 +9,14 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from email.utils import parseaddr
 
 from flask import Flask, abort, make_response, redirect, render_template_string, request, session, url_for
 
 import digest
 
 DB_PATH = os.environ.get("DB_PATH", "/data/digest.db")
+MAX_CORRECTIONS = int(os.environ.get("MAX_CORRECTIONS", "60"))
 POLL_MINUTES = int(os.environ.get("POLL_MINUTES", "30"))
 USERNAME = os.environ.get("APP_USERNAME", "admin")
 PASSWORD = os.environ.get("APP_PASSWORD", "")
@@ -64,6 +66,8 @@ def init_db() -> None:
                 category TEXT, summary TEXT, reason TEXT, deadline TEXT,
                 status TEXT NOT NULL DEFAULT 'open', first_seen TEXT);
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS feedback (
+                sender_addr TEXT PRIMARY KEY, sender TEXT, subject TEXT, category TEXT, at TEXT);
         """)
 
 
@@ -83,7 +87,11 @@ def poll() -> None:
             os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"], digest.LOOKBACK_HOURS, known)
         new_needs = 0
         if emails:
-            result = digest.triage(emails)
+            with db() as c:
+                corrections = [
+                    {"sender": r["sender"], "subject": r["subject"], "category": r["category"]}
+                    for r in c.execute("SELECT * FROM feedback ORDER BY at DESC LIMIT ?", (MAX_CORRECTIONS,))]
+            result = digest.triage(emails, corrections)
             by_id = {e["id"]: e for e in emails}
             seen = set()
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -199,10 +207,12 @@ def index():
         done = c.execute(
             "SELECT * FROM emails WHERE category='needs_input' AND status='done' ORDER BY received DESC LIMIT 20").fetchall()
         other = c.execute(
-            "SELECT * FROM emails WHERE category!='needs_input' ORDER BY received DESC LIMIT 100").fetchall()
+            "SELECT * FROM emails WHERE category NOT IN ('needs_input','junk') ORDER BY received DESC LIMIT 100").fetchall()
+        junk = c.execute("SELECT * FROM emails WHERE category='junk' ORDER BY received DESC LIMIT 50").fetchall()
+        learned = c.execute("SELECT * FROM feedback ORDER BY at DESC").fetchall()
         meta = {r["key"]: r["value"] for r in c.execute("SELECT * FROM meta")}
     return render_template_string(
-        HOME, needs=needs, done=done, other=other, meta=meta, csrf=csrf_token(), poll_minutes=POLL_MINUTES)
+        HOME, needs=needs, done=done, other=other, junk=junk, learned=learned, meta=meta, csrf=csrf_token(), poll_minutes=POLL_MINUTES)
 
 
 def gmail_link(gid: str) -> str:
@@ -260,6 +270,42 @@ def view_email_html(gid: str):
     return resp
 
 
+LABELS = {"needs_input": "Needs my input", "fyi": "FYI", "promo_or_newsletter": "Promo / newsletter",
+          "automated": "Automated", "junk": "Junk"}
+app.jinja_env.globals["LABELS"] = LABELS
+
+
+@app.route("/reclassify/<gid>", methods=["POST"])
+def reclassify(gid: str):
+    """Fix a category and remember it, so future triage runs follow the correction."""
+    check_csrf()
+    new = request.form.get("to", "")
+    if new not in digest.CATEGORIES:
+        abort(400)
+    with db() as c:
+        row = c.execute("SELECT * FROM emails WHERE gmail_id=?", (gid,)).fetchone()
+        if row is None:
+            abort(404)
+        status = "open" if new == "needs_input" else "n/a"
+        c.execute("UPDATE emails SET category=?, status=? WHERE gmail_id=?", (new, status, gid))
+        addr = parseaddr(row["sender"])[1].lower() or row["sender"]
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        c.execute(
+            "INSERT INTO feedback VALUES (?,?,?,?,?) ON CONFLICT(sender_addr) DO UPDATE SET "
+            "sender=excluded.sender, subject=excluded.subject, category=excluded.category, at=excluded.at",
+            (addr, row["sender"], row["subject"], new, now))
+    nxt = request.form.get("next", "")
+    return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else url_for("index"))
+
+
+@app.route("/forget", methods=["POST"])
+def forget():
+    check_csrf()
+    with db() as c:
+        c.execute("DELETE FROM feedback WHERE sender_addr=?", (request.form.get("sender_addr", ""),))
+    return redirect(url_for("index"))
+
+
 @app.route("/status/<gid>", methods=["POST"])
 def status(gid: str):
     check_csrf()
@@ -299,7 +345,12 @@ LOGIN = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="view
 <label>Password<input name="password" type="password" autocomplete="current-password"></label>
 {% if error %}<p class="err">{{ error }}</p>{% endif %}<button>Sign in</button></form></main></html>"""
 
-HOME = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+HOME = """{% macro fix(e, csrf, next='/') %}<details class="fix"><summary>Wrong category?</summary>
+<form method="post" action="/reclassify/{{ e.gmail_id }}" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="next" value="{{ next }}">
+{% for k, label in LABELS.items() if k != e.category %}<button name="to" value="{{ k }}" class="ghost">{{ label }}</button>{% endfor %}
+</form><div class="mute">Future runs will treat mail from this sender the same way.</div></details>{% endmacro %}
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mail Triage</title><style>""" + STYLE + """</style><main>
 <div class="bar"><h1>Needs your input ({{ needs|length }})</h1>
 <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost">Log out</button></form></div>
@@ -315,7 +366,7 @@ HOME = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewp
 {% if e.deadline %}<div class="dl">Deadline: {{ e.deadline }}</div>{% endif %}
 <form method="post" action="/status/{{ e.gmail_id }}" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
 <input type="hidden" name="to" value="done"><button>Done</button>
-<a class="mute" href="{{ gmail_link(e.gmail_id) }}" target="_blank" rel="noreferrer noopener">Open in Gmail</a></form></div>
+<a class="mute" href="{{ gmail_link(e.gmail_id) }}" target="_blank" rel="noreferrer noopener">Open in Gmail</a></form>{{ fix(e, csrf) }}</div>
 {% else %}<p class="mute">Nothing needs you right now.</p>{% endfor %}
 
 {% if done %}<h2>Done</h2><details><summary>{{ done|length }} recent</summary>
@@ -326,11 +377,26 @@ HOME = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewp
 <h2>Everything else</h2><details><summary>{{ other|length }} recent emails</summary>
 {% for e in other %}<div class="card"><div class="subj"><a href="/email/{{ e.gmail_id }}">{{ e.subject }}</a></div>
 <div class="mute">{{ e.sender }} &middot; {{ e.category.replace('_', ' ') }}</div>
-{% if e.category == 'fyi' %}<div>{{ e.summary }}</div>{% endif %}</div>{% endfor %}</details>
+{% if e.category == 'fyi' %}<div>{{ e.summary }}</div>{% endif %}{{ fix(e, csrf) }}</div>{% endfor %}</details>
+
+{% if junk %}<h2>Junk</h2><details><summary>{{ junk|length }} recent</summary>
+{% for e in junk %}<div class="card"><div class="subj"><a href="/email/{{ e.gmail_id }}">{{ e.subject }}</a></div>
+<div class="mute">{{ e.sender }}</div>{{ fix(e, csrf) }}</div>{% endfor %}</details>{% endif %}
+
+<h2>What I have learned</h2><details><summary>{{ learned|length }} sender corrections</summary>
+{% for l in learned %}<div class="card"><div class="mute">{{ l.sender }}</div><div>{{ LABELS.get(l.category, l.category) }}</div>
+<form method="post" action="/forget" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="sender_addr" value="{{ l.sender_addr }}"><button class="ghost">Forget</button></form></div>
+{% else %}<p class="mute">Nothing yet. Use "Wrong category?" on any email.</p>{% endfor %}</details>
 </main></html>"""
 
 
-VIEW = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+VIEW = """{% macro fix(e, csrf, next='/') %}<details class="fix"><summary>Wrong category?</summary>
+<form method="post" action="/reclassify/{{ e.gmail_id }}" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="next" value="{{ next }}">
+{% for k, label in LABELS.items() if k != e.category %}<button name="to" value="{{ k }}" class="ghost">{{ label }}</button>{% endfor %}
+</form><div class="mute">Future runs will treat mail from this sender the same way.</div></details>{% endmacro %}
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ e.subject }}</title><style>""" + STYLE + """
 pre{white-space:pre-wrap;word-wrap:break-word;font:inherit;margin:12px 0}
 iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#fff}</style><main>
@@ -346,6 +412,7 @@ iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;bac
 {% if images %}<a href="/email/{{ e.gmail_id }}?view=html">Hide images</a>{% else %}<a href="/email/{{ e.gmail_id }}?view=html&images=1">Load images (tells the sender you read it)</a>{% endif %}
 {% elif d.has_html %}<a href="/email/{{ e.gmail_id }}?view=html">Formatted</a>{% endif %}
 <a class="mute" href="{{ gmail_link(e.gmail_id) }}" target="_blank" rel="noreferrer noopener">Open in Gmail</a></div>
+{{ fix(e, csrf, '/email/' + e.gmail_id) }}
 {% if formatted %}<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" src="/email/{{ e.gmail_id }}/html{% if images %}?images=1{% endif %}"></iframe>
 {% else %}<pre>{{ d.text or '(no text)' }}</pre>{% endif %}
 {% if d.attachments %}<p class="mute">Attachments (open in Gmail): {{ d.attachments|join(', ') }}</p>{% endif %}
