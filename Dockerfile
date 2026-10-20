@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY digest.py app.py rules.md entrypoint.sh ./
-RUN mkdir /data
+RUN mkdir /data && chmod 777 /data
 ENV PUID=1000 PGID=100
 EXPOSE 8000
 # one worker: the Gmail poller runs as a thread inside it
