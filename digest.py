@@ -16,7 +16,9 @@ from email.utils import parseaddr
 from html import unescape
 from pathlib import Path
 
-BACKEND = os.environ.get("BACKEND", "api")  # "api" (ANTHROPIC_API_KEY) or "claude-cli" (Claude subscription)
+# "api" (ANTHROPIC_API_KEY) or "claude-cli" (Claude subscription token). Unset: use whichever credential is present.
+BACKEND = os.environ.get("BACKEND") or (
+    "claude-cli" if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and not os.environ.get("ANTHROPIC_API_KEY") else "api")
 MODEL = os.environ.get("MODEL") or ("claude-haiku-5-5" if BACKEND == "claude-cli" else "claude-opus-5-5")
 EFFORT = os.environ.get("EFFORT", "low")
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
@@ -242,7 +244,11 @@ def triage(emails: list[dict], corrections: list[dict] | None = None) -> dict:
     system = build_system(rules, corrections)
     prompt = f"Triage these {len(emails)} emails.\n{payload}"
     if BACKEND == "claude-cli":
+        if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            raise RuntimeError("BACKEND=claude-cli but CLAUDE_CODE_OAUTH_TOKEN is not set (run `claude setup-token`)")
         return triage_cli(system, prompt)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("No Claude credentials: set CLAUDE_CODE_OAUTH_TOKEN (BACKEND=claude-cli) or ANTHROPIC_API_KEY (BACKEND=api)")
     import anthropic
 
     client = anthropic.Anthropic()
