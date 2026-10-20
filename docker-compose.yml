@@ -3,6 +3,9 @@ services:
     image: ghcr.io/selbereth/mail-triage:latest
     restart: unless-stopped
     env_file: .env
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-100}
     ports:
       - "8000:8000"   # put an https reverse proxy in front, or bind to 127.0.0.1 / your VPN
     volumes:

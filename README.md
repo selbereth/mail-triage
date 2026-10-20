@@ -15,6 +15,9 @@ Set `BACKEND=claude-cli`. Triage then runs through the Claude Code CLI inside th
 
 Check Anthropic's current usage policy before relying on this for automation. Plan limits are shared with your normal Claude use.
 
+## Running as a specific user
+The container runs as `PUID:PGID` (default `1000:100`) and chowns its data volume to match. Change them in `.env` or the Portainer environment. Setting `user:` in compose instead also works.
+
 ## Security notes
 - Do not put it on the open internet over plain http. Use an https reverse proxy (set `COOKIE_SECURE=1`) or keep it on your LAN/VPN.
 - The first 1500 characters of each new email are sent to the Anthropic API for triage.
