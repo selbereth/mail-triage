@@ -4,7 +4,7 @@ services:
     image: ghcr.io/selbereth/mail-triage:latest
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     environment:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-100}
