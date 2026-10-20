@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Flask, abort, redirect, render_template_string, request, session, url_for
+from flask import Flask, abort, make_response, redirect, render_template_string, request, session, url_for
 
 import digest
 
@@ -149,9 +150,9 @@ def guard():
 @app.after_request
 def headers(resp):
     resp.headers["Cache-Control"] = "no-store"
-    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers["Referrer-Policy"] = "no-referrer"
-    resp.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+    resp.headers.setdefault("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
     return resp
 
 
@@ -211,6 +212,54 @@ def gmail_link(gid: str) -> str:
 app.jinja_env.globals["gmail_link"] = gmail_link
 
 
+def load_message(gid: str):
+    """The stored row plus the live message from Gmail. 404 for ids we never triaged."""
+    if not re.fullmatch(r"[0-9a-f]{1,32}", gid):
+        abort(404)
+    with db() as c:
+        row = c.execute("SELECT * FROM emails WHERE gmail_id=?", (gid,)).fetchone()
+    if row is None:
+        abort(404)
+    try:
+        msg = digest.fetch_message(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"], gid)
+    except Exception as exc:
+        return row, None, repr(exc)
+    return row, msg, "" if msg is not None else "Gmail no longer has this message (deleted or moved to trash)."
+
+
+@app.route("/email/<gid>")
+def view_email(gid: str):
+    row, msg, error = load_message(gid)
+    detail = {}
+    if msg is not None:
+        detail = {
+            "from": digest.decode(msg["From"]), "to": digest.decode(msg["To"]),
+            "date": digest.decode(msg["Date"]), "text": digest.full_text(msg),
+            "has_html": digest.html_body(msg) is not None, "attachments": digest.attachment_names(msg),
+        }
+    resp = make_response(render_template_string(
+        VIEW, e=row, d=detail, error=error, formatted=request.args.get("view") == "html",
+        images=request.args.get("images") == "1", csrf=csrf_token()))
+    resp.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'; form-action 'self'"
+    return resp
+
+
+@app.route("/email/<gid>/html")
+def view_email_html(gid: str):
+    """Sender's HTML in a sandbox: no scripts, no forms, remote images only when asked for."""
+    row, msg, error = load_message(gid)
+    body = digest.html_body(msg) if msg is not None else None
+    if body is None:
+        abort(404)
+    img = "data: https:" if request.args.get("images") == "1" else "data:"
+    resp = make_response('<base target="_blank"><meta name="referrer" content="no-referrer">' + body)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Content-Security-Policy"] = (
+        f"sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src {img}")
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return resp
+
+
 @app.route("/status/<gid>", methods=["POST"])
 def status(gid: str):
     check_csrf()
@@ -260,23 +309,47 @@ HOME = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewp
 {% if meta.get('last_error') %}<p class="err">Last error: {{ meta.last_error }}</p>{% endif %}
 
 {% for e in needs %}<div class="card need">
-<div class="subj"><a href="{{ gmail_link(e.gmail_id) }}" target="_blank" rel="noreferrer noopener">{{ e.subject }}</a></div>
+<div class="subj"><a href="/email/{{ e.gmail_id }}">{{ e.subject }}</a></div>
 <div class="mute">{{ e.sender }} &middot; {{ e.received[:16].replace('T', ' ') }}</div>
 <div>{{ e.summary }}</div><div class="mute">{{ e.reason }}</div>
 {% if e.deadline %}<div class="dl">Deadline: {{ e.deadline }}</div>{% endif %}
 <form method="post" action="/status/{{ e.gmail_id }}" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
-<input type="hidden" name="to" value="done"><button>Done</button></form></div>
+<input type="hidden" name="to" value="done"><button>Done</button>
+<a class="mute" href="{{ gmail_link(e.gmail_id) }}" target="_blank" rel="noreferrer noopener">Open in Gmail</a></form></div>
 {% else %}<p class="mute">Nothing needs you right now.</p>{% endfor %}
 
 {% if done %}<h2>Done</h2><details><summary>{{ done|length }} recent</summary>
-{% for e in done %}<div class="card"><div class="subj">{{ e.subject }}</div><div class="mute">{{ e.sender }}</div>
+{% for e in done %}<div class="card"><div class="subj"><a href="/email/{{ e.gmail_id }}">{{ e.subject }}</a></div><div class="mute">{{ e.sender }}</div>
 <form method="post" action="/status/{{ e.gmail_id }}" class="row"><input type="hidden" name="csrf" value="{{ csrf }}">
 <input type="hidden" name="to" value="open"><button class="ghost">Reopen</button></form></div>{% endfor %}</details>{% endif %}
 
 <h2>Everything else</h2><details><summary>{{ other|length }} recent emails</summary>
-{% for e in other %}<div class="card"><div class="subj">{{ e.subject }}</div>
+{% for e in other %}<div class="card"><div class="subj"><a href="/email/{{ e.gmail_id }}">{{ e.subject }}</a></div>
 <div class="mute">{{ e.sender }} &middot; {{ e.category.replace('_', ' ') }}</div>
 {% if e.category == 'fyi' %}<div>{{ e.summary }}</div>{% endif %}</div>{% endfor %}</details>
+</main></html>"""
+
+
+VIEW = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ e.subject }}</title><style>""" + STYLE + """
+pre{white-space:pre-wrap;word-wrap:break-word;font:inherit;margin:12px 0}
+iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#fff}</style><main>
+<p><a href="/">&larr; Back</a></p>
+<h1>{{ e.subject }}</h1>
+<div class="card"><div class="mute">{{ d.get('from') or e.sender }}</div>
+{% if d.to %}<div class="mute">To: {{ d.to }}</div>{% endif %}
+<div class="mute">{{ d.date or e.received[:16].replace('T', ' ') }}</div>
+<div>{{ e.summary }}</div>{% if e.deadline %}<div class="dl">Deadline: {{ e.deadline }}</div>{% endif %}</div>
+{% if error %}<p class="err">{{ error }}</p>{% else %}
+<div class="row">
+{% if formatted %}<a href="/email/{{ e.gmail_id }}">Plain text</a>
+{% if images %}<a href="/email/{{ e.gmail_id }}?view=html">Hide images</a>{% else %}<a href="/email/{{ e.gmail_id }}?view=html&images=1">Load images (tells the sender you read it)</a>{% endif %}
+{% elif d.has_html %}<a href="/email/{{ e.gmail_id }}?view=html">Formatted</a>{% endif %}
+<a class="mute" href="{{ gmail_link(e.gmail_id) }}" target="_blank" rel="noreferrer noopener">Open in Gmail</a></div>
+{% if formatted %}<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" src="/email/{{ e.gmail_id }}/html{% if images %}?images=1{% endif %}"></iframe>
+{% else %}<pre>{{ d.text or '(no text)' }}</pre>{% endif %}
+{% if d.attachments %}<p class="mute">Attachments (open in Gmail): {{ d.attachments|join(', ') }}</p>{% endif %}
+{% endif %}
 </main></html>"""
 
 

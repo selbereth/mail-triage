@@ -156,6 +156,58 @@ def fetch_emails(address: str, password: str, hours: int, known: set[str]) -> li
     return out
 
 
+def fetch_message(address: str, password: str, gid: str):
+    """One full message by Gmail id (hex), fetched read-only on demand. Nothing is stored."""
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
+    try:
+        imap.login(address, password)
+        imap.select('"[Gmail]/All Mail"', readonly=True)
+        status, data = imap.search(None, "X-GM-MSGID", str(int(gid, 16)))
+        if status != "OK" or not data[0]:
+            return None
+        status, parts = imap.fetch(data[0].split()[-1], "(BODY.PEEK[])")
+        if status != "OK" or not parts or not isinstance(parts[0], tuple):
+            return None
+        return email.message_from_bytes(parts[0][1], policy=default_policy)
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
+def html_to_text(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style|head).*?</\1>", " ", html)
+    html = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", html)
+    text = unescape(re.sub(r"<[^>]+>", " ", html))
+    text = "\n".join(re.sub(r"[ \t\xa0]+", " ", l).strip() for l in text.splitlines())
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def full_text(msg) -> str:
+    """Readable text of the whole message, line breaks kept (prefers the plain part)."""
+    part = msg.get_body(preferencelist=("plain", "html"))
+    if part is None:
+        return ""
+    try:
+        text = part.get_content()
+    except Exception:
+        return ""
+    return html_to_text(text) if part.get_content_type() == "text/html" else text.strip()
+
+
+def html_body(msg) -> str | None:
+    part = msg.get_body(preferencelist=("html",))
+    try:
+        return part.get_content() if part is not None else None
+    except Exception:
+        return None
+
+
+def attachment_names(msg) -> list[str]:
+    return [decode(p.get_filename()) for p in msg.iter_attachments() if p.get_filename()]
+
+
 def triage_cli(system: str, prompt: str) -> dict:
     """Triage through the Claude Code CLI, which bills the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)."""
     proc = subprocess.run(

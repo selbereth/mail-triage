@@ -1,6 +1,6 @@
 # mail-triage
 
-A small web app. Every 30 minutes it reads new Gmail (read-only), has Claude sort it, and keeps a short record of each email: sender, subject, a one-line summary, why it matters and any deadline. Email bodies are never stored. Log in to see the "needs your input" list, tick items done, and open the original in Gmail.
+A small web app. Every 30 minutes it reads new Gmail (read-only), has Claude sort it, and keeps a short record of each email: sender, subject, a one-line summary, why it matters and any deadline. Email bodies are never stored: click a subject and the app fetches that one message from Gmail (read-only) on the spot, shows it as plain text, and offers a sandboxed "Formatted" view (no scripts, remote images blocked unless you choose to load them). Log in to see the "needs your input" list, tick items done, and open the original in Gmail.
 
 ## Setup
 1. Gmail: turn on 2-Step Verification, create an App password, make sure IMAP is enabled.
