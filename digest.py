@@ -6,6 +6,7 @@ import imaplib
 import json
 import os
 import re
+import subprocess
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -15,9 +16,8 @@ from email.utils import parseaddr
 from html import unescape
 from pathlib import Path
 
-import anthropic
-
-MODEL = os.environ.get("MODEL", "claude-opus-5-5")
+BACKEND = os.environ.get("BACKEND", "api")  # "api" (ANTHROPIC_API_KEY) or "claude-cli" (Claude subscription)
+MODEL = os.environ.get("MODEL") or ("claude-haiku-5-5" if BACKEND == "claude-cli" else "claude-opus-5-5")
 EFFORT = os.environ.get("EFFORT", "low")
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "48"))
 MAX_EMAILS = int(os.environ.get("MAX_EMAILS", "150"))
@@ -156,16 +156,41 @@ def fetch_emails(address: str, password: str, hours: int, known: set[str]) -> li
     return out
 
 
+def triage_cli(system: str, prompt: str) -> dict:
+    """Triage through the Claude Code CLI, which bills the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)."""
+    proc = subprocess.run(
+        ["claude", "-p", "--output-format", "json", "--model", MODEL, "--effort", EFFORT,
+         "--tools", "", "--no-session-persistence", "--disable-slash-commands",
+         "--setting-sources", "", "--strict-mcp-config",
+         "--system-prompt", system, "--json-schema", json.dumps(SCHEMA)],
+        input=prompt, capture_output=True, text=True, timeout=600,
+        env={k: v for k, v in os.environ.items() if v or k != "ANTHROPIC_API_KEY"},
+    )
+    try:
+        out = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"claude CLI failed ({proc.returncode}): {(proc.stderr or proc.stdout)[:500]}")
+    if out.get("is_error") or "structured_output" not in out:
+        raise RuntimeError(f"claude CLI error: {str(out.get('result'))[:500]}")
+    return out["structured_output"]
+
+
 def triage(emails: list[dict]) -> dict:
     rules = os.environ.get("RULES") or (RULES_FILE.read_text() if RULES_FILE.exists() else "(none)")
     payload = "\n".join(f"<email>{json.dumps(e, ensure_ascii=False)}</email>" for e in emails)
+    system = SYSTEM.format(rules=rules)
+    prompt = f"Triage these {len(emails)} emails.\n{payload}"
+    if BACKEND == "claude-cli":
+        return triage_cli(system, prompt)
+    import anthropic
+
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=MODEL,
         max_tokens=16000,
-        system=SYSTEM.format(rules=rules),
+        system=system,
         output_config={"effort": EFFORT, "format": {"type": "json_schema", "schema": SCHEMA}},
-        messages=[{"role": "user", "content": f"Triage these {len(emails)} emails.\n{payload}"}],
+        messages=[{"role": "user", "content": prompt}],
     )
     if response.stop_reason == "refusal":
         raise RuntimeError(f"Claude declined the request: {response.stop_details}")

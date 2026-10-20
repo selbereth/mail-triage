@@ -7,6 +7,14 @@ A small web app. Every 30 minutes it reads new Gmail (read-only), has Claude sor
 2. `cp .env.example .env`, fill it in (`SECRET_KEY`, a long `APP_PASSWORD`). Edit `rules.md` with your own priorities.
 3. `docker compose up -d --build`, then open `http://<server>:8000`.
 
+## Using a Claude subscription instead of an API key
+Set `BACKEND=claude-cli`. Triage then runs through the Claude Code CLI inside the container and counts against your Claude plan limits, not API credit.
+1. On a machine where you are logged in to Claude Code, run `claude setup-token` and copy the token.
+2. Set `CLAUDE_CODE_OAUTH_TOKEN` to it. `ANTHROPIC_API_KEY` is not needed.
+3. `MODEL` defaults to `claude-haiku-5-5` in this mode.
+
+Check Anthropic's current usage policy before relying on this for automation. Plan limits are shared with your normal Claude use.
+
 ## Security notes
 - Do not put it on the open internet over plain http. Use an https reverse proxy (set `COOKIE_SECURE=1`) or keep it on your LAN/VPN.
 - The first 1500 characters of each new email are sent to the Anthropic API for triage.

@@ -8,13 +8,15 @@ services:
     environment:
       GMAIL_ADDRESS: ${GMAIL_ADDRESS}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      BACKEND: ${BACKEND:-api}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       APP_USERNAME: ${APP_USERNAME}
       APP_PASSWORD: ${APP_PASSWORD}
       SECRET_KEY: ${SECRET_KEY}
       COOKIE_SECURE: ${COOKIE_SECURE:-0}
       POLL_MINUTES: ${POLL_MINUTES:-30}
-      MODEL: ${MODEL:-claude-opus-5-5}
+      MODEL: ${MODEL:-}
       NTFY_URL: ${NTFY_URL:-}
       # RULES: "multi-line text here"   # optional: replaces the default rules baked into the image
     volumes:
