@@ -18,8 +18,25 @@ POLL_MINUTES = int(os.environ.get("POLL_MINUTES", "30"))
 USERNAME = os.environ.get("APP_USERNAME", "admin")
 PASSWORD = os.environ.get("APP_PASSWORD", "")
 
+
+
+def load_secret_key() -> str:
+    """SECRET_KEY if set, else a random key generated on first start and kept in the data volume."""
+    if os.environ.get("SECRET_KEY"):
+        return os.environ["SECRET_KEY"]
+    path = os.path.join(os.path.dirname(DB_PATH), "secret_key")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(secrets.token_hex(32))
+    except FileExistsError:
+        pass
+    with open(path) as f:
+        return f.read().strip()
+
+
 app = Flask(__name__)
-app.secret_key = os.environ["SECRET_KEY"]
+app.secret_key = load_secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",

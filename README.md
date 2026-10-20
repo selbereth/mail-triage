@@ -4,7 +4,7 @@ A small web app. Every 30 minutes it reads new Gmail (read-only), has Claude sor
 
 ## Setup
 1. Gmail: turn on 2-Step Verification, create an App password, make sure IMAP is enabled.
-2. `cp .env.example .env`, fill it in (`SECRET_KEY`, a long `APP_PASSWORD`). Edit `rules.md` with your own priorities.
+2. `cp .env.example .env`, fill it in (a long `APP_PASSWORD`; the session `SECRET_KEY` is generated on first start and saved in the data volume). Edit `rules.md` with your own priorities.
 3. `docker compose up -d --build`, then open `http://<server>:8000`.
 
 ## Using a Claude subscription instead of an API key
