@@ -1,0 +1,4 @@
+- Anything from a real person who asks me a question is needs_input.
+- Bills, payment due notices, and appointment confirmations that need a reply are needs_input.
+- Shipping updates, receipts and bank statements are fyi.
+- Add your own senders and topics here.

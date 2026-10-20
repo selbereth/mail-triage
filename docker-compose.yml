@@ -1,0 +1,12 @@
+services:
+  mail-triage:
+    image: ghcr.io/selbereth/mail-triage:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"   # put an https reverse proxy in front, or bind to 127.0.0.1 / your VPN
+    volumes:
+      - ./rules.md:/app/rules.md:ro
+      - triage-data:/data
+volumes:
+  triage-data:
