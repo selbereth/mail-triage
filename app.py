@@ -218,6 +218,12 @@ def headers(resp):
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers.setdefault("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+    if resp.mimetype == "text/html" and not resp.direct_passthrough:
+        # Cloudflare would otherwise rewrite every address into a /cdn-cgi/l/email-protection link
+        text = resp.get_data(as_text=True)
+        head = re.match(r"\s*<!doctype[^>]*>", text, re.I)
+        cut = head.end() if head else 0
+        resp.set_data(text[:cut] + "<!--email_off-->" + text[cut:] + "<!--/email_off-->")
     return resp
 
 
