@@ -162,6 +162,20 @@ def fetch_emails(address: str, password: str, hours: int, known: set[str]) -> li
     return out
 
 
+def check_login(address: str, password: str) -> None:
+    """Raise if Gmail rejects the address / app password."""
+    imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
+    try:
+        imap.login(address, password)
+    except imaplib.IMAP4.error as exc:
+        raise RuntimeError(exc.args[0].decode(errors="replace") if exc.args and isinstance(exc.args[0], bytes) else str(exc))
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
 def fetch_message(address: str, password: str, gid: str):
     """One full message by Gmail id (hex), fetched read-only on demand. Nothing is stored."""
     imap = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
