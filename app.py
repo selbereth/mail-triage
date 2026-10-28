@@ -50,6 +50,7 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 14,
 )
 
+EMAIL_RE = re.compile(r"([\w.+-]+)@([\w-]+\.[\w.-]+)")
 _poll_lock = threading.Lock()
 _failures: dict[str, list[float]] = {}
 
@@ -221,6 +222,8 @@ def headers(resp):
     if resp.mimetype == "text/html" and not resp.direct_passthrough:
         # Cloudflare would otherwise rewrite every address into a /cdn-cgi/l/email-protection link
         text = resp.get_data(as_text=True)
+        if request.endpoint != "view_email_html":  # our own pages: Cloudflare's detector skips "&#64;"
+            text = EMAIL_RE.sub(r"\1&#64;\2", text)
         head = re.match(r"\s*<!doctype[^>]*>", text, re.I)
         cut = head.end() if head else 0
         resp.set_data(text[:cut] + "<!--email_off-->" + text[cut:] + "<!--/email_off-->")
